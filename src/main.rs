@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate log;
+
 use std::net::{TcpStream};
 use std::io::{Read, Write};
 use std::str::from_utf8;
@@ -9,6 +12,8 @@ fn get_task_addr() -> String {
 }
 
 fn main() {
+    simple_logger::init().unwrap();
+
     match TcpStream::connect(get_task_addr()) {
         Ok(mut stream) => {
             let msg = b"hello!";
@@ -18,20 +23,20 @@ fn main() {
             match stream.read_exact(&mut data) {
                 Ok(_) => {
                     if &data == msg {
-                        println!("Reply is ok!")
+                        trace!("received reply");
                     } else {
                         let text = from_utf8(&data).unwrap();
-                        println!("unexpected reply: {}", text);
+                        warn!("unexpected reply: {}", text);
                     }
                 },
                 Err(e) => {
                     println!("{}", e);
+                    error!("stream read failed: {}", e);
                 },
             }
         },
         Err(e) => {
-            // TODO(ljoswiak): Handle/log error.
-            println!("{}", e);
+            error!("failed to connect to server: {}", e);
         },
     }
 }
