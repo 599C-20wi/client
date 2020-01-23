@@ -3,9 +3,11 @@ extern crate log;
 
 use std::net::{TcpStream};
 use std::io::{Read, Write};
-use std::str::from_utf8;
 
-const RESPONSE_SIZE: usize = 6;
+use task::message::{Request, Response};
+use task::translate::{Language};
+
+const BUFFER_SIZE: usize = 256;
 
 fn get_task_addr() -> String {
     String::from("54.183.196.119:3333")
@@ -16,18 +18,36 @@ fn main() {
 
     match TcpStream::connect(get_task_addr()) {
         Ok(mut stream) => {
-            let msg = b"hello!";
-            stream.write(msg).unwrap();
+            let message = Request{
+                lang: Language::Spanish,
+                text: String::from("test"),
+            };
+            stream.write(&message.serialize()).unwrap();
 
-            let mut data = [0 as u8; RESPONSE_SIZE];
-            match stream.read_exact(&mut data) {
-                Ok(_) => {
-                    if &data == msg {
-                        trace!("received reply");
-                    } else {
-                        let text = from_utf8(&data).unwrap();
-                        warn!("unexpected reply: {}", text);
+            let mut buffer = [0 as u8; BUFFER_SIZE];
+            match stream.read(&mut buffer) {
+                Ok(size) => {
+                    if size == 0 {
+                        // Server died.
+                        return;
                     }
+
+                    let response = match Response::deserialize(&buffer[..size]) {
+                        Ok(message) => message,
+                        Err(e) => {
+                            error!("deserialization failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+
+                    match response {
+                        Response::Accept{text} => {
+                            info!("received accept response: {}", text);
+                        },
+                        Response::Reject{error} => {
+                            info!("received reject response: {}", error);
+                        },
+                    };
                 },
                 Err(e) => {
                     println!("{}", e);
