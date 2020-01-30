@@ -4,22 +4,23 @@ extern crate log;
 use std::env;
 use std::error;
 use std::fmt;
-use std::fs::{File};
+use std::fs::File;
 use std::io::{Read, Write};
-use std::net::{TcpStream};
+use std::net::TcpStream;
 use std::path::Path;
 
-use rand::{Rng, thread_rng};
 use rand::distributions::Uniform;
 use rand::seq::IteratorRandom;
+use rand::{thread_rng, Rng};
 
+use task::face::Expression;
 use task::message::{Request, Response};
-use task::face::{Expression};
 
 const BUFFER_SIZE: usize = 256;
 
 fn get_task_addr() -> String {
-    String::from("54.183.196.119:3333")
+    // String::from("54.183.196.119:3333")
+    String::from("localhost:3333")
 }
 
 // Reads the given file into buffer.
@@ -40,7 +41,10 @@ impl fmt::Display for GenerationError {
 
 impl error::Error for GenerationError {}
 
-fn generate_expression(rng: &mut rand::rngs::ThreadRng, distribution: impl rand::distributions::Distribution<i32>) -> Result<Expression, GenerationError> {
+fn generate_expression(
+    rng: &mut rand::rngs::ThreadRng,
+    distribution: impl rand::distributions::Distribution<i32>,
+) -> Result<Expression, GenerationError> {
     match rng.sample(distribution) {
         0 => Ok(Expression::Anger),
         1 => Ok(Expression::Happiness),
@@ -56,7 +60,8 @@ fn main() {
 
     // Load all images in the given directory.
     let path = Path::new("./src/resource/");
-    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(path).unwrap()
+    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(path)
+        .unwrap()
         .filter(|r| r.is_ok())
         .map(|r| r.unwrap().path())
         .filter(|r| r.extension().is_some())
@@ -74,7 +79,7 @@ fn main() {
                     Err(error) => {
                         error!("failed to generate expression: {}", error);
                         continue;
-                    },
+                    }
                 };
 
                 // Randomly select an image and read it into memory.
@@ -82,13 +87,16 @@ fn main() {
                 let mut image_buffer = Vec::new();
                 read_file(image_path, &mut image_buffer).expect("failed to read file");
 
-                debug!("sending image: {:?} with expression {:?}", image_path, expression);
-                let message = Request{
-                    expression: expression,
+                debug!(
+                    "sending image: {:?} with expression {:?}",
+                    image_path, expression
+                );
+                let message = Request {
+                    expression,
                     image: image_buffer,
                 };
                 let serialized = message.serialize();
-                stream.write(serialized.as_bytes()).unwrap();
+                stream.write_all(serialized.as_bytes()).unwrap();
 
                 let mut buffer = [0 as u8; BUFFER_SIZE];
                 match stream.read(&mut buffer) {
@@ -107,23 +115,23 @@ fn main() {
                         };
 
                         match response {
-                            Response::Accept{matches_expression} => {
+                            Response::Accept { matches_expression } => {
                                 info!("received accept response: {:?}", matches_expression);
-                            },
-                            Response::Reject{error} => {
+                            }
+                            Response::Reject { error } => {
                                 info!("received reject response: {}", error);
-                            },
+                            }
                         };
-                    },
+                    }
                     Err(e) => {
                         println!("{}", e);
                         error!("stream read failed: {}", e);
-                    },
+                    }
                 }
             }
-        },
+        }
         Err(e) => {
             error!("failed to connect to server: {}", e);
-        },
+        }
     }
 }
