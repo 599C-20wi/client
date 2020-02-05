@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
+use std::process;
 
 use rand::distributions::Uniform;
 use rand::seq::IteratorRandom;
@@ -56,6 +57,10 @@ fn main() {
     simple_logger::init().unwrap();
 
     let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        println!("usage: run cargo <number-of-requests>");
+        process::exit(1);
+    }
     let repeat: i32 = args[1].parse().unwrap();
 
     // Load all images in the given directory.
