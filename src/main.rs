@@ -53,6 +53,64 @@ fn generate_expression(
     }
 }
 
+// Ask the assigner for the task server assigned to hanlde the given expression.
+// Returns true on success and false on failure.
+fn update_assignments(
+    assignments: &mut HashMap<Expression, Vec<String>>,
+    expression: &Expression,
+    server_index: &mut usize,
+) -> bool {
+    if assignments.get(&expression).is_none() {
+        debug!("querying assigner for expression {:?}", expression);
+        // Send request to assigner.
+        let assignment = match TcpStream::connect(ASSIGNER_ADDRESS) {
+            Ok(mut stream) => {
+                let get = Get {
+                    slice_key: hash::to_slice_key(&expression),
+                };
+                let serialized = get.serialize();
+                stream.write_all(serialized.as_bytes()).unwrap();
+
+                let mut buffer = [0 as u8; BUFFER_SIZE];
+                match stream.read(&mut buffer) {
+                    Ok(size) => {
+                        if size == 0 {
+                            // Assigner died.
+                            return false;
+                        }
+
+                        match Assignment::deserialize(&buffer[..size]) {
+                            Ok(message) => message,
+                            Err(e) => {
+                                error!("deserialization failed: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("stream read failed: {}", e);
+                        return false;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("failed to connect to assigner: {}", e);
+                return false;
+            }
+        };
+        info!(
+            "received assignment for {:?}: {:?}",
+            expression, assignment.addresses
+        );
+        assignments.insert(expression.clone(), assignment.addresses);
+        // Reset server index if a new assignment was successfully fetched.
+        // server_index = 0;
+        *server_index = 0;
+    }
+
+    true
+}
+
 fn main() {
     simple_logger::init().unwrap();
 
@@ -99,58 +157,16 @@ fn main() {
 
         // Figure out which task server to send request to by looking in cache
         // or asking the assigner if value is not cached.
-        if assignments.get(&expression).is_none() {
-            debug!("querying assigner for expression {:?}", expression);
-            // Send request to assigner.
-            let assignment = match TcpStream::connect(ASSIGNER_ADDRESS) {
-                Ok(mut stream) => {
-                    let get = Get {
-                        slice_key: hash::to_slice_key(&expression),
-                    };
-                    let serialized = get.serialize();
-                    stream.write_all(serialized.as_bytes()).unwrap();
-
-                    let mut buffer = [0 as u8; BUFFER_SIZE];
-                    match stream.read(&mut buffer) {
-                        Ok(size) => {
-                            if size == 0 {
-                                // Assigner died.
-                                return;
-                            }
-
-                            match Assignment::deserialize(&buffer[..size]) {
-                                Ok(message) => message,
-                                Err(e) => {
-                                    error!("deserialization failed: {}", e);
-                                    std::process::exit(1);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("stream read failed: {}", e);
-                            continue 'send;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("failed to connect to assigner: {}", e);
-                    continue 'send;
-                }
-            };
-            info!(
-                "received assignment for {:?}: {:?}",
-                expression, assignment.addresses
-            );
-            assignments.insert(expression.clone(), assignment.addresses);
-            server_index = 0;
+        if !update_assignments(&mut assignments, &expression, &mut server_index) {
+            continue 'send;
         }
-
         let tasks = assignments.get(&expression).unwrap();
         let task = &tasks[server_index];
-        server_index += 1;
+        server_index = (server_index + 1) % tasks.len();
 
         if streams.get(task).is_none() {
             // TCP stream not cached, open new connection to task server.
+            debug!("opening new connection to {}", task);
             let stream = match TcpStream::connect(task) {
                 Ok(stream) => stream,
                 Err(e) => {
