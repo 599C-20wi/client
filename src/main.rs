@@ -217,6 +217,7 @@ fn main() {
                             "received reject response: {} for expression {:?}",
                             error, expression
                         );
+                        update_assignments(&mut assignments, &expression, &mut server_index);
                     }
                 };
             }
