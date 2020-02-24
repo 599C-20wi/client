@@ -2,14 +2,13 @@
 extern crate log;
 
 use std::collections::HashMap;
-use std::env;
 use std::error;
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
-use std::process;
+use std::thread;
 
 use rand::distributions::Uniform;
 use rand::seq::IteratorRandom;
@@ -19,6 +18,8 @@ use assigner::hash;
 use assigner::message::{Assignment, Get};
 use task::face::Expression;
 use task::message::{Request, Response};
+
+mod admin;
 
 const BUFFER_SIZE: usize = 256;
 
@@ -111,6 +112,48 @@ fn update_assignments(
     true
 }
 
+fn task_reader(stream: &mut TcpStream) {
+    let mut buffer = [0 as u8; BUFFER_SIZE];
+    'read: while match stream.read(&mut buffer) {
+        Ok(size) => {
+            if size == 0 {
+                // Server died.
+                return;
+            }
+
+            let response = match Response::deserialize(&buffer[..size]) {
+                Ok(message) => message,
+                Err(e) => {
+                    error!("deserialization failed: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            match response {
+                Response::Accept { matches_expression } => {
+                    info!("received accept response: {:?}", matches_expression);
+                }
+                Response::Reject {
+                    error_msg: error,
+                    expression,
+                } => {
+                    info!(
+                        "received reject response: {} for expression {:?}",
+                        error, expression
+                    );
+                    // update_assignments(&mut assignments, &expression, &mut server_index);
+                }
+            };
+
+            true
+        }
+        Err(e) => {
+            error!("stream read failed: {}", e);
+            continue 'read;
+        }
+    } {}
+}
+
 fn main() {
     simple_logger::init().unwrap();
 
@@ -120,13 +163,6 @@ fn main() {
 
     // Cache open TCP streams.
     let mut streams: HashMap<String, TcpStream> = HashMap::new();
-
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        println!("usage: cargo run <number-of-requests>");
-        process::exit(1);
-    }
-    let repeat: i32 = args[1].parse().unwrap();
 
     // Load all images in the given directory.
     let path = Path::new("./src/resource/");
@@ -138,10 +174,13 @@ fn main() {
         .filter(|r| r.extension().unwrap() == "jpg" || r.extension().unwrap() == "jpeg")
         .collect();
 
+    // Start listening for administrative messages.
+    admin::start();
+
     let mut rng = thread_rng();
     let distribution = Uniform::new(0, 2);
 
-    'send: for _ in 0..repeat {
+    'send: loop {
         let expression = match generate_expression(&mut rng, &distribution) {
             Ok(expression) => expression,
             Err(error) => {
@@ -174,7 +213,12 @@ fn main() {
                     continue 'send;
                 }
             };
+            let mut second_stream = stream.try_clone().unwrap();
             streams.insert(task.to_string(), stream);
+
+            thread::spawn(move || {
+                task_reader(&mut second_stream);
+            });
         }
 
         debug!(
@@ -188,43 +232,5 @@ fn main() {
         };
         let serialized = message.serialize();
         stream.write_all(serialized.as_bytes()).unwrap();
-
-        let mut buffer = [0 as u8; BUFFER_SIZE];
-        match stream.read(&mut buffer) {
-            Ok(size) => {
-                if size == 0 {
-                    // Server died.
-                    return;
-                }
-
-                let response = match Response::deserialize(&buffer[..size]) {
-                    Ok(message) => message,
-                    Err(e) => {
-                        error!("deserialization failed: {}", e);
-                        std::process::exit(1);
-                    }
-                };
-
-                match response {
-                    Response::Accept { matches_expression } => {
-                        info!("received accept response: {:?}", matches_expression);
-                    }
-                    Response::Reject {
-                        error_msg: error,
-                        expression,
-                    } => {
-                        info!(
-                            "received reject response: {} for expression {:?}",
-                            error, expression
-                        );
-                        update_assignments(&mut assignments, &expression, &mut server_index);
-                    }
-                };
-            }
-            Err(e) => {
-                error!("stream read failed: {}", e);
-                continue 'send;
-            }
-        }
     }
 }
