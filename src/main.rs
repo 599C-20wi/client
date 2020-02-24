@@ -174,6 +174,14 @@ fn main() {
         .filter(|r| r.extension().unwrap() == "jpg" || r.extension().unwrap() == "jpeg")
         .collect();
 
+    // Load images into memory.
+    let mut images: Vec<Vec<u8>> = Vec::new();
+    for entry in entries {
+        let mut image_buffer = Vec::new();
+        read_file(&entry, &mut image_buffer).unwrap();
+        images.push(image_buffer);
+    }
+
     // Start listening for administrative messages.
     thread::spawn(move || {
         admin::start();
@@ -191,10 +199,8 @@ fn main() {
             }
         };
 
-        // Randomly select an image and read it into memory.
-        let image_path = entries.iter().choose(&mut rng).unwrap();
-        let mut image_buffer = Vec::new();
-        read_file(image_path, &mut image_buffer).expect("failed to read file");
+        // Pick random image.
+        let image_buffer = images.iter().choose(&mut rng).unwrap();
 
         // Figure out which task server to send request to by looking in cache
         // or asking the assigner if value is not cached.
@@ -223,14 +229,11 @@ fn main() {
             });
         }
 
-        debug!(
-            "sending image: {:?} with expression {:?} to {}",
-            image_path, expression, task
-        );
+        debug!("sending image with expression {:?} to {}", expression, task);
         let mut stream = streams.get(task).unwrap();
         let message = Request {
             expression,
-            image: image_buffer,
+            image: image_buffer.to_vec(),
         };
         let serialized = message.serialize();
         stream.write_all(serialized.as_bytes()).unwrap();
