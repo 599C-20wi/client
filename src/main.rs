@@ -2,7 +2,6 @@
 extern crate log;
 
 use std::collections::HashMap;
-use std::error;
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -10,9 +9,9 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::thread;
 
-use rand::distributions::Uniform;
+use rand::distributions::{Distribution, WeightedIndex};
 use rand::seq::IteratorRandom;
-use rand::{thread_rng, Rng};
+use rand::thread_rng;
 
 use assigner::hash;
 use assigner::message::{Assignment, Get};
@@ -41,17 +40,13 @@ impl fmt::Display for GenerationError {
     }
 }
 
-impl error::Error for GenerationError {}
-
-fn generate_expression(
-    rng: &mut rand::rngs::ThreadRng,
-    distribution: impl rand::distributions::Distribution<i32>,
-) -> Result<Expression, GenerationError> {
-    match rng.sample(distribution) {
-        0 => Ok(Expression::Anger),
-        1 => Ok(Expression::Happiness),
-        _ => Err(GenerationError),
-    }
+#[allow(clippy::redundant_clone)]
+fn generate_expression() -> Expression {
+    let expressions = [Expression::Anger, Expression::Happiness];
+    let weights = unsafe { &admin::DISTR_WEIGHTS };
+    let dist = WeightedIndex::new(weights).unwrap();
+    let mut rng = thread_rng();
+    expressions[dist.sample(&mut rng)].clone()
 }
 
 // Ask the assigner for the task server assigned to hanlde the given expression.
@@ -187,19 +182,11 @@ fn main() {
         admin::start();
     });
 
-    let mut rng = thread_rng();
-    let distribution = Uniform::new(0, 2);
-
     'send: loop {
-        let expression = match generate_expression(&mut rng, &distribution) {
-            Ok(expression) => expression,
-            Err(error) => {
-                error!("failed to generate expression: {}", error);
-                continue;
-            }
-        };
+        let expression = generate_expression();
 
-        // Pick random image.
+        // Select a random image.
+        let mut rng = thread_rng();
         let image_buffer = images.iter().choose(&mut rng).unwrap();
 
         // Figure out which task server to send request to by looking in cache

@@ -3,6 +3,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::thread;
 
 const ADMIN_PORT: u16 = 3001;
+pub static mut DISTR_WEIGHTS: [u16; 2] = [50, 50];
 
 pub fn start() {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", ADMIN_PORT)).unwrap();
@@ -31,9 +32,20 @@ fn handle_client(stream: TcpStream) {
             }
 
             // Read all data except newline character.
-            let value = std::str::from_utf8(&buffer[..size - 1]).unwrap();
-            let value: i32 = value.parse().expect("Expected to read an int");
-            println!("read int from stream: {}", value);
+            let raw_value = std::str::from_utf8(&buffer[..size - 1]).unwrap();
+            let new_anger_weight: u16 = raw_value.parse().expect("Expected to read an int");
+            if new_anger_weight > 100 {
+                error!(
+                    "recieved invalid anger weight, expected 0 to 100: {}",
+                    new_anger_weight
+                );
+                continue 'read;
+            }
+            info!("read anger weight: {}", new_anger_weight);
+            unsafe {
+                DISTR_WEIGHTS[0] = new_anger_weight;
+                DISTR_WEIGHTS[1] = 100 - new_anger_weight;
+            }
             true
         }
         Err(error) => {
