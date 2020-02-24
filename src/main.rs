@@ -175,7 +175,9 @@ fn main() {
         .collect();
 
     // Start listening for administrative messages.
-    admin::start();
+    thread::spawn(move || {
+        admin::start();
+    });
 
     let mut rng = thread_rng();
     let distribution = Uniform::new(0, 2);
