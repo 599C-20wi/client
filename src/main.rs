@@ -61,6 +61,7 @@ fn update_assignments(
         // Send request to assigner.
         let assignment = match TcpStream::connect(ASSIGNER_ADDRESS) {
             Ok(mut stream) => {
+                stream.set_nodelay(true).expect("set_nodelay call failed");
                 let get = Get {
                     slice_key: hash::to_slice_key(&expression),
                 };
@@ -202,7 +203,10 @@ fn main() {
             // TCP stream not cached, open new connection to task server.
             debug!("opening new connection to {}", task);
             let stream = match TcpStream::connect(task) {
-                Ok(stream) => stream,
+                Ok(stream) => {
+                    stream.set_nodelay(true).expect("set_nodelay call failed");
+                    stream
+                },
                 Err(e) => {
                     error!("failed to connect to task server {}: {}", task, e);
                     continue 'send;
