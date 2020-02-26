@@ -4,7 +4,7 @@ extern crate log;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::thread;
@@ -109,8 +109,9 @@ fn update_assignments(
 }
 
 fn task_reader(stream: &mut TcpStream) {
-    let mut buffer = [0 as u8; BUFFER_SIZE];
-    'read: while match stream.read(&mut buffer) {
+    let mut reader = BufReader::new(stream);
+    let mut buffer = Vec::new();
+    'read: while match reader.read_until(b'\n', &mut buffer) {
         Ok(size) => {
             if size == 0 {
                 // Server died.
@@ -141,6 +142,7 @@ fn task_reader(stream: &mut TcpStream) {
                 }
             };
 
+            buffer.clear();
             true
         }
         Err(e) => {
@@ -206,7 +208,7 @@ fn main() {
                 Ok(stream) => {
                     stream.set_nodelay(true).expect("set_nodelay call failed");
                     stream
-                },
+                }
                 Err(e) => {
                     error!("failed to connect to task server {}: {}", task, e);
                     continue 'send;
