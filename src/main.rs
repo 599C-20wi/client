@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::thread;
+use std::time::Instant;
 
 use rand::distributions::{Distribution, WeightedIndex};
 use rand::seq::IteratorRandom;
@@ -54,9 +55,11 @@ fn generate_expression() -> Expression {
 fn update_assignments(
     assignments: &mut HashMap<Expression, Vec<String>>,
     expression: &Expression,
-    server_index: &mut usize,
+    server_index: &mut HashMap<Expression, usize>,
+    start: &mut Instant,
 ) -> bool {
-    if assignments.get(&expression).is_none() {
+    if assignments.get(&expression).is_none() || start.elapsed().as_secs() > 10 {
+        *start = Instant::now();
         debug!("querying assigner for expression {:?}", expression);
         // Send request to assigner.
         let assignment = match TcpStream::connect(ASSIGNER_ADDRESS) {
@@ -101,8 +104,7 @@ fn update_assignments(
         );
         assignments.insert(expression.clone(), assignment.addresses);
         // Reset server index if a new assignment was successfully fetched.
-        // server_index = 0;
-        *server_index = 0;
+        server_index.insert(expression.clone(), 0);
     }
 
     true
@@ -138,7 +140,6 @@ fn task_reader(stream: &mut TcpStream) {
                         "received reject response: {} for expression {:?}",
                         error, expression
                     );
-                    // update_assignments(&mut assignments, &expression, &mut server_index);
                 }
             };
 
@@ -157,7 +158,7 @@ fn main() {
 
     // Map of expressions -> vector of task servers to handle requests.
     let mut assignments: HashMap<Expression, Vec<String>> = HashMap::new();
-    let mut server_index = 0;
+    let mut server_index = HashMap::new();
 
     // Cache open TCP streams.
     let mut streams: HashMap<String, TcpStream> = HashMap::new();
@@ -185,6 +186,8 @@ fn main() {
         admin::start();
     });
 
+    let mut now = Instant::now();
+
     'send: loop {
         let expression = generate_expression();
 
@@ -194,12 +197,18 @@ fn main() {
 
         // Figure out which task server to send request to by looking in cache
         // or asking the assigner if value is not cached.
-        if !update_assignments(&mut assignments, &expression, &mut server_index) {
+        if !update_assignments(&mut assignments, &expression, &mut server_index, &mut now) {
             continue 'send;
         }
+        trace!("assignments={:?}", assignments);
         let tasks = assignments.get(&expression).unwrap();
-        let task = &tasks[server_index];
-        server_index = (server_index + 1) % tasks.len();
+        trace!("tasks={:?}", tasks);
+        trace!("server index={:?}, tasks len={}", server_index, tasks.len());
+        let task = &tasks[server_index[&expression]];
+        server_index.insert(
+            expression.clone(),
+            (server_index[&expression] + 1) % tasks.len(),
+        );
 
         if streams.get(task).is_none() {
             // TCP stream not cached, open new connection to task server.
