@@ -1,14 +1,18 @@
 #[macro_use]
 extern crate log;
 
+#[macro_use]
+extern crate lazy_static;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rand::distributions::{Distribution, WeightedIndex};
 use rand::seq::IteratorRandom;
@@ -24,6 +28,11 @@ mod admin;
 const BUFFER_SIZE: usize = 256;
 
 const ASSIGNER_ADDRESS: &str = "184.169.220.191:4333";
+
+lazy_static! {
+    static ref SERVER_INDEX_COUNTER: Arc<RwLock<HashMap<Expression, usize>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+}
 
 // Reads the given file into buffer.
 fn read_file(filename: &std::path::PathBuf, buffer: &mut Vec<u8>) -> Result<usize, std::io::Error> {
@@ -53,56 +62,58 @@ fn generate_expression() -> Expression {
 // Ask the assigner for the task server assigned to hanlde the given expression.
 // Returns true on success and false on failure.
 fn update_assignments(
-    assignments: &mut HashMap<Expression, Vec<String>>,
+    counter: Arc<RwLock<HashMap<Expression, Vec<String>>>>,
     expression: &Expression,
-    server_index: &mut HashMap<Expression, usize>,
-    start: &mut Instant,
 ) -> bool {
-    if assignments.get(&expression).is_none() || start.elapsed().as_secs() > 10 {
-        *start = Instant::now();
-        debug!("querying assigner for expression {:?}", expression);
-        // Send request to assigner.
-        let assignment = match TcpStream::connect(ASSIGNER_ADDRESS) {
-            Ok(mut stream) => {
-                stream.set_nodelay(true).expect("set_nodelay call failed");
-                let get = Get {
-                    slice_key: hash::to_slice_key(&expression),
-                };
-                let serialized = get.serialize();
-                stream.write_all(serialized.as_bytes()).unwrap();
+    debug!("querying assigner for expression {:?}", expression);
+    // Send request to assigner.
+    let assignment = match TcpStream::connect(ASSIGNER_ADDRESS) {
+        Ok(mut stream) => {
+            stream.set_nodelay(true).expect("set_nodelay call failed");
+            let get = Get {
+                slice_key: hash::to_slice_key(&expression),
+            };
+            let serialized = get.serialize();
+            stream.write_all(serialized.as_bytes()).unwrap();
 
-                let mut buffer = [0 as u8; BUFFER_SIZE];
-                match stream.read(&mut buffer) {
-                    Ok(size) => {
-                        if size == 0 {
-                            // Assigner died.
-                            return false;
-                        }
-
-                        match Assignment::deserialize(&buffer[..size]) {
-                            Ok(message) => message,
-                            Err(e) => {
-                                error!("deserialization failed: {}", e);
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("stream read failed: {}", e);
+            let mut buffer = [0 as u8; BUFFER_SIZE];
+            match stream.read(&mut buffer) {
+                Ok(size) => {
+                    if size == 0 {
+                        // Assigner died.
                         return false;
                     }
+
+                    match Assignment::deserialize(&buffer[..size]) {
+                        Ok(message) => message,
+                        Err(e) => {
+                            error!("deserialization failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("stream read failed: {}", e);
+                    return false;
                 }
             }
-            Err(e) => {
-                error!("failed to connect to assigner: {}", e);
-                return false;
-            }
-        };
-        info!(
-            "received assignment for {:?}: {:?}",
-            expression, assignment.addresses
-        );
+        }
+        Err(e) => {
+            error!("failed to connect to assigner: {}", e);
+            return false;
+        }
+    };
+    info!(
+        "received assignment for {:?}: {:?}",
+        expression, assignment.addresses
+    );
+    {
+        let mut assignments = counter.write().unwrap();
         assignments.insert(expression.clone(), assignment.addresses);
+    }
+    {
+        let server_index_counter = Arc::clone(&SERVER_INDEX_COUNTER);
+        let mut server_index = server_index_counter.write().unwrap();
         // Reset server index if a new assignment was successfully fetched.
         server_index.insert(expression.clone(), 0);
     }
@@ -157,8 +168,8 @@ fn main() {
     simple_logger::init().unwrap();
 
     // Map of expressions -> vector of task servers to handle requests.
-    let mut assignments: HashMap<Expression, Vec<String>> = HashMap::new();
-    let mut server_index = HashMap::new();
+    let assignments: HashMap<Expression, Vec<String>> = HashMap::new();
+    let counter = Arc::new(RwLock::new(assignments));
 
     // Cache open TCP streams.
     let mut streams: HashMap<String, TcpStream> = HashMap::new();
@@ -187,6 +198,7 @@ fn main() {
     });
 
     let mut now = Instant::now();
+    now = now.checked_sub(Duration::new(3, 0)).unwrap();
 
     'send: loop {
         let expression = generate_expression();
@@ -195,20 +207,39 @@ fn main() {
         let mut rng = thread_rng();
         let image_buffer = images.iter().choose(&mut rng).unwrap();
 
-        // Figure out which task server to send request to by looking in cache
-        // or asking the assigner if value is not cached.
-        if !update_assignments(&mut assignments, &expression, &mut server_index, &mut now) {
+        {
+            // Check for assignment updates asynchronously.
+            debug!("now elapsed: {}", now.elapsed().as_secs());
+            if now.elapsed().as_secs() > 3 {
+                now = Instant::now();
+                let update_counter = Arc::clone(&counter);
+                let expression = expression.clone();
+                thread::spawn(move || {
+                    // Figure out which task server to send request to.
+                    update_assignments(update_counter, &expression)
+                });
+            }
+        }
+
+        let read_counter = Arc::clone(&counter);
+        let assignments_read = read_counter.read().unwrap();
+        trace!(
+            "assignments={:?}, expression={:?}",
+            assignments_read,
+            expression
+        );
+        if assignments_read.get(&expression) == None {
             continue 'send;
         }
-        trace!("assignments={:?}", assignments);
-        let tasks = assignments.get(&expression).unwrap();
+        let tasks = assignments_read.get(&expression).unwrap();
+
+        let server_index_counter = Arc::clone(&SERVER_INDEX_COUNTER);
+        let mut server_index = server_index_counter.write().unwrap();
         trace!("tasks={:?}", tasks);
         trace!("server index={:?}, tasks len={}", server_index, tasks.len());
         let task = &tasks[server_index[&expression]];
-        server_index.insert(
-            expression.clone(),
-            (server_index[&expression] + 1) % tasks.len(),
-        );
+        let current_index = server_index[&expression];
+        server_index.insert(expression.clone(), (current_index + 1) % tasks.len());
 
         if streams.get(task).is_none() {
             // TCP stream not cached, open new connection to task server.

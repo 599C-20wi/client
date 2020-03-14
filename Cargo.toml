@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 log = "0.4.0"
+lazy_static = "1.4.0"
 rand = "0.7.3"
 simple_logger = "1.4.0"
 assigner = { git = "https://github.com/599C-20wi/assigner" }

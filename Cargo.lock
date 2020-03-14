@@ -54,6 +54,7 @@ name = "client"
 version = "0.1.0"
 dependencies = [
  "assigner 0.1.0 (git+https://github.com/599C-20wi/assigner)",
+ "lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "simple_logger 1.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
